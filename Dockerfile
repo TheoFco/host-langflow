@@ -1,5 +1,15 @@
 FROM langflowai/langflow:1.6.7
 
-EXPOSE 7860
+USER root
 
-CMD ["langflow", "run", "--host", "0.0.0.0", "--port", "7860"]
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends nginx openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 7860
+ENTRYPOINT ["/app/entrypoint.sh"]

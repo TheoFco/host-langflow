@@ -4,7 +4,7 @@ USER root
 
 # Install nginx (reverse proxy)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends nginx ca-certificates \
+  && apt-get install -y --no-install-recommends nginx nginx-module-perl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

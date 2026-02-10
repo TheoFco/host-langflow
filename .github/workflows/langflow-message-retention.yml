@@ -15,6 +15,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 
+      - name: Ensure DATABASE_URL is set
+        env:
+          DATABASE_URL: ${{ secrets.LANGFLOW_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "LANGFLOW_DATABASE_URL secret is missing or empty."
+            exit 1
+          fi
+          echo "DATABASE_URL is set (value hidden)."
+
       - name: Dry run (count rows to delete)
         env:
           DATABASE_URL: ${{ secrets.LANGFLOW_DATABASE_URL }}

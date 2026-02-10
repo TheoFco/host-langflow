@@ -1,0 +1,30 @@
+name: Langflow message retention (7 days)
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Dry run (count rows to delete)
+        env:
+          DATABASE_URL: ${{ secrets.LANGFLOW_DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "select count(*) as would_delete from public.message where \"timestamp\" < now() - interval '7 days';"
+
+      - name: Delete old messages (keep 7 days)
+        env:
+          DATABASE_URL: ${{ secrets.LANGFLOW_DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "delete from public.message where \"timestamp\" < now() - interval '7 days';"

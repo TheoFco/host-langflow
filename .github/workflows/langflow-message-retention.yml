@@ -2,7 +2,7 @@ name: Langflow message retention (7 days)
 
 on:
   schedule:
-    - cron: "0 6 * * *" # daily 06:00 UTC
+    - cron: "*/5 * * * *" # daily 06:00 UTC
   workflow_dispatch: {}
 
 jobs:

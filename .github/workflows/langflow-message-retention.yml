@@ -9,6 +9,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: host-langflow   # ← ADD THIS — use your actual environment name
     steps:
       - name: Install psql client
         run: |
@@ -38,3 +39,12 @@ jobs:
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
             "delete from public.message where \"timestamp\" < now() - interval '7 days';"
+
+      # ── NEW: Also clean transaction logs (can grow large too) ──────────────
+      - name: Delete old transactions (keep 7 days)
+        env:
+          DATABASE_URL: ${{ secrets.LANGFLOW_DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "delete from public.transaction where \"timestamp\" < now() - interval '7 days';" || \
+          echo "transaction table not found or already clean, skipping."

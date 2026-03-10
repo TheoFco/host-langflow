@@ -1,0 +1,51 @@
+name: Reset ECS Auto Scaling minimum capacity
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+jobs:
+  reset-min-capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: host-langflow
+    permissions: {}
+    env:
+      ECS_CLUSTER: fc-web-server-f0ei9o-x1ck1bek
+      ECS_SERVICE: fc-web-server-f0ei9o-x1ck1bek
+      SCALABLE_RESOURCE_ID: service/fc-web-server-f0ei9o-x1ck1bek/fc-web-server-f0ei9o-x1ck1bek
+    steps:
+      - name: Wait for ECS deployment to stabilize
+        run: sleep 120
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Reset scalable target minimum capacity to 1
+        run: |
+          aws application-autoscaling register-scalable-target \
+            --service-namespace ecs \
+            --resource-id "$SCALABLE_RESOURCE_ID" \
+            --scalable-dimension ecs:service:DesiredCount \
+            --min-capacity 1 \
+            --max-capacity 2
+
+      - name: Verify reset and print current capacity
+        run: |
+          aws application-autoscaling describe-scalable-targets \
+            --service-namespace ecs \
+            --resource-ids "$SCALABLE_RESOURCE_ID" \
+            --query 'ScalableTargets[0].{MinCapacity:MinCapacity,MaxCapacity:MaxCapacity}' \
+            --output table
+
+          aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].{Desired:desiredCount,Running:runningCount,Pending:pendingCount}' \
+            --output table

@@ -9,23 +9,32 @@ on:
 jobs:
   reset-min-capacity:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment: host-langflow
     permissions: {}
     env:
       ECS_CLUSTER: fc-web-server-f0ei9o-x1ck1bek
       ECS_SERVICE: fc-web-server-f0ei9o-x1ck1bek
       SCALABLE_RESOURCE_ID: service/fc-web-server-f0ei9o-x1ck1bek/fc-web-server-f0ei9o-x1ck1bek
+      AWS_REGION: us-east-1
     steps:
-      - name: Wait for ECS deployment to stabilize
-        run: sleep 120
+      - name: Wait for Flightcontrol deployment to complete (~9 min)
+        run: sleep 600
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Wait for ECS service to reach steady state
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+          echo "ECS service is stable."
 
       - name: Reset scalable target minimum capacity to 1
         run: |
@@ -35,15 +44,46 @@ jobs:
             --scalable-dimension ecs:service:DesiredCount \
             --min-capacity 1 \
             --max-capacity 2
+          echo "Scalable target minimum reset to 1."
 
-      - name: Verify reset and print current capacity
+      - name: Scale in to 1 instance if CPU is low
         run: |
+          # Get average CPU over the last 5 minutes
+          CPU=$(aws cloudwatch get-metric-statistics \
+            --namespace AWS/ECS \
+            --metric-name CPUUtilization \
+            --dimensions Name=ClusterName,Value="$ECS_CLUSTER" Name=ServiceName,Value="$ECS_SERVICE" \
+            --start-time "$(date -u -d '5 minutes ago' +%FT%TZ)" \
+            --end-time "$(date -u +%FT%TZ)" \
+            --period 300 \
+            --statistics Average \
+            --query 'Datapoints[0].Average' \
+            --output text)
+
+          echo "Current average CPU: ${CPU}%"
+
+          if [ "$CPU" = "None" ] || (( $(echo "$CPU < 30" | bc -l) )); then
+            echo "CPU is low (${CPU}%). Forcing desired count to 1..."
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$ECS_SERVICE" \
+              --desired-count 1 \
+              --no-cli-pager
+            echo "Desired count set to 1."
+          else
+            echo "CPU is ${CPU}% — traffic is active, leaving at current instance count."
+          fi
+
+      - name: Verify final state
+        run: |
+          echo "=== Scalable Target ==="
           aws application-autoscaling describe-scalable-targets \
             --service-namespace ecs \
             --resource-ids "$SCALABLE_RESOURCE_ID" \
             --query 'ScalableTargets[0].{MinCapacity:MinCapacity,MaxCapacity:MaxCapacity}' \
             --output table
 
+          echo "=== ECS Service Counts ==="
           aws ecs describe-services \
             --cluster "$ECS_CLUSTER" \
             --services "$ECS_SERVICE" \

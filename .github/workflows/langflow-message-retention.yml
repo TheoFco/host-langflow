@@ -27,7 +27,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Discover task definition and network config from the running service
           SERVICE=$(aws ecs describe-services \
             --cluster "$ECS_CLUSTER" \
             --services "$ECS_SERVICE" \
@@ -47,8 +46,6 @@ jobs:
           echo "Container name  : $CONTAINER_NAME"
           echo "Launch type     : $LAUNCH_TYPE"
 
-          # Python cleanup script — runs inside the container, which already has
-          # network access to the RDS instance and the LANGFLOW_DATABASE_URL env var.
           read -r -d '' PYTHON_SCRIPT <<'PYEOF' || true
           import os, sys
           try:
@@ -56,40 +53,42 @@ jobs:
               engine = create_engine(os.environ["LANGFLOW_DATABASE_URL"])
               with engine.begin() as conn:
                   n = conn.execute(text(
-                      "SELECT COUNT(*) FROM public.message"
-                      " WHERE timestamp < NOW() - INTERVAL '7 days'"
+                      "SELECT COUNT(*) FROM public.message "
+                      "WHERE timestamp < NOW() - INTERVAL '7 days'"
                   )).scalar()
                   print(f"Messages to delete: {n}")
+
                   r = conn.execute(text(
-                      "DELETE FROM public.message"
-                      " WHERE timestamp < NOW() - INTERVAL '7 days'"
+                      "DELETE FROM public.message "
+                      "WHERE timestamp < NOW() - INTERVAL '7 days'"
                   ))
                   print(f"Deleted {r.rowcount} messages")
+
                   try:
                       r = conn.execute(text(
-                          "DELETE FROM public.transaction"
-                          " WHERE timestamp < NOW() - INTERVAL '7 days'"
+                          "DELETE FROM public.transaction "
+                          "WHERE timestamp < NOW() - INTERVAL '7 days'"
                       ))
                       print(f"Deleted {r.rowcount} transactions")
                   except Exception as e:
                       print(f"transaction table skip: {e}")
+
               print("Done.")
           except Exception as e:
               print(f"Error: {e}", file=sys.stderr)
               sys.exit(1)
           PYEOF
 
-          # Build overrides JSON safely with jq
+          # IMPORTANT: ECS containerOverrides supports command, not entryPoint.
           OVERRIDES=$(jq -n \
             --arg container "$CONTAINER_NAME" \
             --arg script "$PYTHON_SCRIPT" \
             '{containerOverrides:[{
                name: $container,
-               entryPoint: ["python3", "-c"],
-               command: [$script]
+               command: ["sh","-lc","python3 -c \"$PY_SCRIPT\""],
+               environment: [{name:"PY_SCRIPT", value:$script}]
              }]}')
 
-          # Launch a one-off task in the same VPC / security-group as the service
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --task-definition "$TASK_DEF" \
@@ -101,17 +100,22 @@ jobs:
 
           echo "Launched cleanup task: $TASK_ARN"
 
-          # Wait for the task to finish (up to ~10 min per waiter default)
           aws ecs wait tasks-stopped \
             --cluster "$ECS_CLUSTER" \
             --tasks "$TASK_ARN"
 
-          # Propagate the container exit code
           EXIT_CODE=$(aws ecs describe-tasks \
             --cluster "$ECS_CLUSTER" \
             --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].exitCode' \
+            --query 'tasks[0].containers[?name==`'"$CONTAINER_NAME"'`][0].exitCode' \
             --output text)
 
+          REASON=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' \
+            --output text)
+
+          echo "Stopped reason: $REASON"
           echo "Task exit code: $EXIT_CODE"
           [ "$EXIT_CODE" = "0" ] || exit 1

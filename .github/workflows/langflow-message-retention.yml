@@ -99,24 +99,45 @@ jobs:
               sys.exit(1)
           PYEOF
 
-          # Override entryPoint to bypass the base Docker image's ENTRYPOINT
-          # (langflowai/langflow sets ENTRYPOINT which interferes with custom commands).
-          # Pass the script directly to python3 -c without shell interpretation.
-          OVERRIDES=$(jq -n \
+          # ECS containerOverrides does NOT support "entryPoint". To bypass the
+          # base image ENTRYPOINT we register a one-off task-def revision with a
+          # custom entryPoint that runs our Python cleanup script directly.
+          TASK_DEF_JSON=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF" \
+            --query 'taskDefinition' \
+            --output json)
+
+          CLEANUP_TASK_DEF=$(echo "$TASK_DEF_JSON" | jq \
             --arg container "$CONTAINER_NAME" \
             --arg script "$PYTHON_SCRIPT" \
-            '{containerOverrides:[{
-               name: $container,
-               entryPoint: ["python3","-c"],
-               command: [$script]
-             }]}')
+            '.containerDefinitions |= map(
+              if .name == $container then
+                .entryPoint = ["python3", "-c", $script] | .command = []
+              else . end
+            ) | {
+              family,
+              containerDefinitions,
+              taskRoleArn,
+              executionRoleArn,
+              networkMode,
+              cpu,
+              memory,
+              requiresCompatibilities,
+              runtimePlatform
+            } | with_entries(select(.value != null))')
+
+          CLEANUP_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$CLEANUP_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "Registered cleanup task def: $CLEANUP_TASK_DEF_ARN"
 
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
-            --task-definition "$TASK_DEF" \
+            --task-definition "$CLEANUP_TASK_DEF_ARN" \
             --network-configuration "$NETWORK_CONFIG" \
             --launch-type "$LAUNCH_TYPE" \
-            --overrides "$OVERRIDES" \
             --query 'tasks[0].taskArn' \
             --output text)
 
@@ -140,4 +161,9 @@ jobs:
 
           echo "Stopped reason: $REASON"
           echo "Task exit code: $EXIT_CODE"
+
+          # Deregister the one-off task definition to avoid clutter
+          aws ecs deregister-task-definition \
+            --task-definition "$CLEANUP_TASK_DEF_ARN" > /dev/null 2>&1 || true
+
           [ "$EXIT_CODE" = "0" ] || exit 1

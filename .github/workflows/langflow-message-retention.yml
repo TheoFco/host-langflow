@@ -50,14 +50,27 @@ jobs:
           import os, sys
           try:
               def normalize_sync_database_url(database_url: str) -> str:
-                  for async_driver in ("+asyncpg", "+aiosqlite"):
-                      database_url = database_url.replace(async_driver, "")
+                  if "+asyncpg" in database_url:
+                      database_url = database_url.replace("+asyncpg", "+psycopg")
+                  elif "+aiosqlite" in database_url:
+                      database_url = database_url.replace("+aiosqlite", "")
                   if database_url.startswith("postgres://"):
-                      database_url = database_url.replace("postgres://", "postgresql://", 1)
+                      database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+                  elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
+                      database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
                   return database_url
 
+              db_url = os.environ.get("LANGFLOW_DATABASE_URL", "")
+              if not db_url:
+                  print("Error: LANGFLOW_DATABASE_URL is not set", file=sys.stderr)
+                  sys.exit(1)
+
+              print(f"Connecting to database (driver: psycopg)...")
               from sqlalchemy import create_engine, text
-              engine = create_engine(normalize_sync_database_url(os.environ["LANGFLOW_DATABASE_URL"]))
+              engine = create_engine(
+                  normalize_sync_database_url(db_url),
+                  connect_args={"connect_timeout": 30},
+              )
               with engine.begin() as conn:
                   n = conn.execute(text(
                       'SELECT COUNT(*) FROM "message" '
@@ -86,14 +99,16 @@ jobs:
               sys.exit(1)
           PYEOF
 
-          # IMPORTANT: ECS containerOverrides supports command, not entryPoint.
+          # Override entryPoint to bypass the base Docker image's ENTRYPOINT
+          # (langflowai/langflow sets ENTRYPOINT which interferes with custom commands).
+          # Pass the script directly to python3 -c without shell interpretation.
           OVERRIDES=$(jq -n \
             --arg container "$CONTAINER_NAME" \
             --arg script "$PYTHON_SCRIPT" \
             '{containerOverrides:[{
                name: $container,
-               command: ["sh","-lc","python3 -c \"$PY_SCRIPT\""],
-               environment: [{name:"PY_SCRIPT", value:$script}]
+               entryPoint: ["python3","-c"],
+               command: [$script]
              }]}')
 
           TASK_ARN=$(aws ecs run-task \

@@ -49,25 +49,32 @@ jobs:
           read -r -d '' PYTHON_SCRIPT <<'PYEOF' || true
           import os, sys
           try:
+              def normalize_sync_database_url(database_url: str) -> str:
+                  for async_driver in ("+asyncpg", "+aiosqlite"):
+                      database_url = database_url.replace(async_driver, "")
+                  if database_url.startswith("postgres://"):
+                      database_url = database_url.replace("postgres://", "postgresql://", 1)
+                  return database_url
+
               from sqlalchemy import create_engine, text
-              engine = create_engine(os.environ["LANGFLOW_DATABASE_URL"])
+              engine = create_engine(normalize_sync_database_url(os.environ["LANGFLOW_DATABASE_URL"]))
               with engine.begin() as conn:
                   n = conn.execute(text(
-                      "SELECT COUNT(*) FROM public.message "
-                      "WHERE timestamp < NOW() - INTERVAL '7 days'"
-                  )).scalar()
+                      'SELECT COUNT(*) FROM "message" '
+                      "WHERE \"timestamp\" < NOW() - INTERVAL '7 days'"
+                  )).scalar_one()
                   print(f"Messages to delete: {n}")
 
                   r = conn.execute(text(
-                      "DELETE FROM public.message "
-                      "WHERE timestamp < NOW() - INTERVAL '7 days'"
+                      'DELETE FROM "message" '
+                      "WHERE \"timestamp\" < NOW() - INTERVAL '7 days'"
                   ))
                   print(f"Deleted {r.rowcount} messages")
 
                   try:
                       r = conn.execute(text(
-                          "DELETE FROM public.transaction "
-                          "WHERE timestamp < NOW() - INTERVAL '7 days'"
+                          'DELETE FROM "transaction" '
+                          "WHERE \"timestamp\" < NOW() - INTERVAL '7 days'"
                       ))
                       print(f"Deleted {r.rowcount} transactions")
                   except Exception as e:

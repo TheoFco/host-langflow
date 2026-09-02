@@ -1,4 +1,4 @@
-FROM langflowai/langflow:1.9.3
+FROM langflowai/langflow:1.12
 
 EXPOSE 7860
 
